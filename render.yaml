@@ -1,0 +1,11 @@
+# Render 免费部署配置（Render Blueprint）
+# 上传本项目后，Render 会根据本文件自动创建 Web Service
+services:
+  - type: web
+    name: wuzi-caigou-system
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app"
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /

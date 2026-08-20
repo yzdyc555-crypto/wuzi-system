@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>物资采购需求计划管理系统</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-title">物资需求计划</div>
+      <div class="brand-sub">管理系统</div>
+    </div>
+    <nav class="sidebar-nav" id="nav"></nav>
+  </aside>
+  <div class="sidebar-mask" id="sidebarMask" onclick="toggleSidebar(false)"></div>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" onclick="toggleSidebar(true)">☰</button>
+      <div class="topbar-title" id="topbarTitle">工作台</div>
+      <div class="topbar-user">
+        <span class="user-role-badge" id="userRoleBadge"></span>
+        <span class="user-name" id="userName"></span>
+        <div class="dropdown">
+          <button class="icon-btn" id="userMenuBtn">···</button>
+          <div class="dropdown-menu" id="userMenu">
+            <button onclick="showChangePassword()">修改密码</button>
+            <button onclick="logout()">退出登录</button>
+          </div>
+        </div>
+      </div>
+    </header>
+    <main class="content" id="view">
+      <div class="loading">加载中...</div>
+    </main>
+  </div>
+</div>
+
+<!-- 弹窗容器 -->
+<div id="modalRoot"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
