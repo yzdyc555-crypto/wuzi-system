@@ -626,22 +626,32 @@ async function renderApproveDone() {
 /* ---------------- 管理员：物料库 ---------------- */
 let matKw = "";
 let matSort = { by: "id", order: "desc" };
+let matStatus = "active"; // active=在用 / disabled=已下架
 let matChecked = new Set();
 async function renderMaterials() {
   const v = document.getElementById("view");
   v.innerHTML = '<div class="loading">加载中...</div>';
   const data = await api("/api/materials?kw=" + encodeURIComponent(matKw) +
-    "&limit=100&sort_by=" + matSort.by + "&order=" + matSort.order);
+    "&limit=100&sort_by=" + matSort.by + "&order=" + matSort.order + "&status=" + matStatus);
   matChecked = new Set();
+  const statusChips = `<span class="filter-chip">
+    <span class="chip ${matStatus === "active" ? "active" : ""}" onclick="setMatStatus('active')">在用</span>
+    <span class="chip ${matStatus === "disabled" ? "active" : ""}" onclick="setMatStatus('disabled')">已下架</span>
+  </span>`;
+  const matTitle = matStatus === "active" ? "标准物料库" : "已下架物料";
   const sortOpts = [
     ["id", "默认（最新入库）"], ["code", "物料编号"], ["name", "物料描述"]
   ].map(([k, l]) => `<option value="${k}" ${matSort.by === k ? "selected" : ""}>按${l}排序</option>`).join("");
   const orderOpts = [["desc", "降序"], ["asc", "升序"]]
     .map(([k, l]) => `<option value="${k}" ${matSort.order === k ? "selected" : ""}>${l}</option>`).join("");
   if (!data.materials.length) {
+    const emptyTip = matStatus === "active"
+      ? "物料库为空，请先「批量导入Excel」或「手动新增」。"
+      : "暂无已下架物料。已下架物料不参与导入去重对比，可点「启用」恢复在用。";
     v.innerHTML = `<div class="card">
-      <div class="card-title">标准物料库 <span class="hint">从云梦泽/历史台账导出的Excel批量导入，建立标准物料库</span></div>
+      <div class="card-title">${matTitle} <span class="hint">${matStatus === "active" ? "从云梦泽/历史台账导出的Excel批量导入，建立标准物料库" : "下架≠删除：历史记录保留，可随时启用恢复在用"}</span></div>
       <div class="toolbar">
+        ${statusChips}
         <input type="text" id="matSearch" placeholder="搜索物料名称/编号/型号" value="${esc(matKw)}" onkeydown="if(event.key==='Enter')searchMats()">
         <button class="btn btn-primary" onclick="searchMats()">搜索</button>
         <select id="matSortBy" class="select-sm" onchange="setMatSort()">${sortOpts}</select>
@@ -650,7 +660,7 @@ async function renderMaterials() {
         <button class="btn" onclick="addMaterial()">手动新增</button>
         <label class="btn"><span>批量导入Excel</span><input type="file" accept=".xlsx,.xls,.et" style="display:none" onchange="importMaterials(this)"></label>
       </div>
-      <div class="empty">物料库为空，请先「批量导入Excel」或「手动新增」。</div></div>`;
+      <div class="empty">${emptyTip}</div></div>`;
     return;
   }
   const rows = data.materials.map(m => `<tr>
@@ -663,8 +673,9 @@ async function renderMaterials() {
       <button class="btn btn-sm ${m.status === "active" ? "" : "btn-success"}" onclick="toggleMaterial(${m.id})">${m.status === "active" ? "下架" : "启用"}</button>
     </td></tr>`).join("");
   v.innerHTML = `<div class="card">
-    <div class="card-title">标准物料库 <span class="hint">共 ${data.materials.length} 条；重复物料会在导入时逐条确认，避免误跳过</span></div>
+    <div class="card-title">${matTitle} <span class="hint">${matStatus === "active" ? `共 ${data.materials.length} 条；重复物料会在导入时逐条确认，避免误跳过` : `共 ${data.materials.length} 条；下架≠删除，可点「启用」恢复在用`}</span></div>
     <div class="toolbar">
+      ${statusChips}
       <input type="text" id="matSearch" placeholder="搜索物料名称/编号/型号" value="${esc(matKw)}" onkeydown="if(event.key==='Enter')searchMats()">
       <button class="btn btn-primary" onclick="searchMats()">搜索</button>
       <select id="matSortBy" class="select-sm" onchange="setMatSort()">${sortOpts}</select>
@@ -690,6 +701,11 @@ function searchMats() {
 function setMatSort() {
   matSort.by = document.getElementById("matSortBy").value;
   matSort.order = document.getElementById("matSortOrder").value;
+  renderMaterials();
+}
+
+function setMatStatus(s) {
+  matStatus = s;
   renderMaterials();
 }
 
@@ -856,10 +872,11 @@ function buildImportConflictModal() {
   const items = importConflictState.items;
   const blocks = items.map((c, i) => {
     const cur = importConflictState.decisions[c.row] || "existing";
-    const newFmt = matFmt(null, c.new);
+    // 高亮本次导入列：与库内已有逐字段对比，值不同处用铁锈红突出显示
+    const newFmt = matFmt(null, c.new, c.existing[0] || null);
     const existFmts = c.existing.map(e => {
       const tag = e.id && !isNaN(e.id) ? `（ID:${e.id}${e.status === "disabled" ? "，已下架" : ""}）` : "（本文件内重复行）";
-      return `<div class="cmp-col"><div class="cmp-title">库内已有 ${tag}</div>${matFmt(null, e, c.new)}</div>`;
+      return `<div class="cmp-col"><div class="cmp-title">库内已有 ${tag}</div>${matFmt(null, e)}</div>`;
     }).join("");
     return `<div class="conflict-block" data-row="${c.row}">
       <div class="conflict-head">第 ${c.row} 行 · ${esc(c.new.name)} ${c.new.code ? "（编号：" + esc(c.new.code) + "）" : ""}

@@ -522,14 +522,23 @@ def api_dept_receivers_save():
     return jsonify({"ok": True, "msg": "部门收货信息已保存（%d 条）" % saved})
 
 # ---------------------------------------------------------------- 物料库
-def search_materials(db, kw, limit=50, sort_by="id", order="desc"):
-    """物料查询。sort_by 支持 id/code/name，order 支持 asc/desc。"""
-    sql = "SELECT * FROM materials WHERE status='active'"
+def search_materials(db, kw, limit=50, sort_by="id", order="desc", status="active"):
+    """物料查询。sort_by 支持 id/code/name，order 支持 asc/desc；status 支持 active/disabled/all。"""
+    conds = []
     args = []
+    if status == "disabled":
+        conds.append("status='disabled'")
+    elif status == "all":
+        pass
+    else:
+        conds.append("status='active'")
     if kw:
         like = "%" + kw.strip() + "%"
-        sql += " AND (name LIKE ? OR code LIKE ? OR spec LIKE ? OR supplier LIKE ?)"
+        conds.append("(name LIKE ? OR code LIKE ? OR spec LIKE ? OR supplier LIKE ?)")
         args = [like, like, like, like]
+    sql = "SELECT * FROM materials"
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
     order_sql = {"code": "code", "name": "name", "id": "id"}.get(sort_by, "id")
     order_dir = "ASC" if str(order).lower() == "asc" else "DESC"
     sql += " ORDER BY %s %s, id DESC LIMIT ?" % (order_sql, order_dir)
@@ -542,8 +551,9 @@ def api_materials():
     kw = request.args.get("kw", "")
     sort_by = request.args.get("sort_by", "id")
     order = request.args.get("order", "desc")
+    status = request.args.get("status", "active")
     db = get_db()
-    rows = search_materials(db, kw, limit=100, sort_by=sort_by, order=order)
+    rows = search_materials(db, kw, limit=100, sort_by=sort_by, order=order, status=status)
     return jsonify({"ok": True, "materials": [dict(r) for r in rows]})
 
 @app.route("/api/materials", methods=["POST"])
@@ -770,7 +780,7 @@ def api_material_import():
         conds.append("name=?")
         args.append(name)
         exist = db.execute(
-            "SELECT id,code,name,spec,unit,price,ecode,supplier_code,supplier,status FROM materials WHERE (%s) ORDER BY id" %
+            "SELECT id,code,name,spec,unit,price,ecode,supplier_code,supplier,status FROM materials WHERE status='active' AND (%s) ORDER BY id" %
             " OR ".join(conds), args).fetchall()
         # 叠加本次文件内已插入/已确认的物料，识别文件自身重复
         file_dup = [s for s in seen_mats if (code and s["code"] == code) or s["name"] == name]

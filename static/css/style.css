@@ -339,6 +339,7 @@ tr:hover td { background: #f8fafc; }
   background: var(--white); font-size: 13px; cursor: pointer;
 }
 .chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
 
 /* 响应式 */
 @media (max-width: 768px) {
@@ -379,10 +380,10 @@ tr:hover td { background: #f8fafc; }
 .cmp-table td { border: 1px solid var(--border); padding: 5px 8px; white-space: normal; word-break: break-all; }
 .cmp-table td.cmp-label { background: #f7f8fa; color: var(--text-light); width: 88px; }
 .cmp-table td.cmp-diff {
-  background: #fff7e6;
-  color: #ad6800;
+  background: #fbeae7;
+  color: #a63d2f;
   font-weight: 700;
-  border-left: 3px solid #ffa940;
+  border-left: 3px solid #b7410e;
 }
 .conflict-actions { display: flex; flex-wrap: wrap; gap: 10px 18px; font-size: 13px; }
 .conflict-actions label { display: flex; align-items: flex-start; gap: 5px; cursor: pointer; }
