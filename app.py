@@ -693,52 +693,19 @@ def api_material_import():
     if not rows:
         return jsonify({"ok": False, "msg": "文件为空"})
 
-    # 表头映射（兼容多种命名，含全角/半角括号变体，如"供应商(缩写)"）
-    key_map = {
-        "物料编号": "code", "物料编码": "code", "编码": "code", "商品编码": "code", "电商物料编号": "code",
-        "物料描述": "name", "物料名称": "name", "名称": "name", "描述": "name", "商品名称": "name",
-        "规格型号": "spec", "规格": "spec", "型号": "spec",
-        "计量单位": "unit", "单位": "unit", "计量单位名称": "unit",
-        "标准单价": "price", "单价": "price", "价格": "price", "标准价格": "price", "含税单价": "price",
-        "电商编码": "ecode", "电商编号": "ecode", "商品编码ID": "ecode",
-        "供应商编码": "supplier_code", "供应商编号": "supplier_code",
-        "供应商": "supplier", "供应商简称": "supplier", "供应商缩写": "supplier",
-    }
-
-    def norm_header(h):
-        """表头归一化：去空白、全角转半角、去掉括号及括号内内容"""
-        h = (h or "").strip()
-        out = []
-        for ch in h:
-            code = ord(ch)
-            if code in (0x3000, 0x20):  # 全角/半角空格
-                continue
-            if 0xFF01 <= code <= 0xFF5E:  # 全角转半角
-                out.append(chr(code - 0xFEE0))
-            else:
-                out.append(ch)
-        s = "".join(out)
-        s = re.sub(r"[\(（][^)）]*[\)）]", "", s)  # 去掉括号及内容
-        return s
-
-    # 在前5行内查找表头行（包含"物料描述/物料名称/商品名称"任一词）
-    header_row_idx = 0
-    for ri in range(min(5, len(rows))):
-        for v in rows[ri]:
-            if v and norm_header(str(v)) in ("物料描述", "物料名称", "商品名称", "名称", "描述"):
-                header_row_idx = ri
-                break
-        if header_row_idx:
-            break
+    # 在前30行内自动定位表头行（兼容表头不在首行、上方有标题/日期/备注等固定行的表格）
+    header_row_idx = locate_import_header(rows)
+    if header_row_idx < 0:
+        return jsonify({"ok": False, "msg": "未识别到表头行，请确认表格包含『物料编号、物料描述、标准单价、供应商』等表头列（表头可不在首行）"})
 
     header = [str(c).strip() if c is not None else "" for c in rows[header_row_idx]]
     mapping = {}
     for i, h in enumerate(header):
-        f = key_map.get(norm_header(h))
+        f = IMPORT_KEY_MAP.get(norm_header(h))
         if f and f not in mapping:
             mapping[f] = i
     if "name" not in mapping:
-        return jsonify({"ok": False, "msg": "未识别到『物料描述/物料名称』列，请确认表格首行为表头（如：物料编号、物料描述、规格型号、计量单位、标准单价、电商编码、供应商编码、供应商）"})
+        return jsonify({"ok": False, "msg": "未识别到『物料描述/物料名称』列，请确认表格包含该表头列（如：物料编号、物料描述、规格型号、计量单位、标准单价、电商编码、供应商编码、供应商）"})
 
     # 非物料数据行特征（合计、审核、签字、备注等模板尾部区域）
     NON_DATA_KEYWORDS = ("合计", "小计", "总计", "审核", "审批", "意见", "编制",
@@ -1257,6 +1224,41 @@ def norm_header(h):
     s = "".join(out)
     s = re.sub(r"[\(（][^)）]*[\)）]", "", s)  # 去掉括号及内容
     return s
+
+
+# 物料批量导入表头 → 数据字段映射（兼容多种命名，含全角/半角括号变体，如"供应商(缩写)"）
+IMPORT_KEY_MAP = {
+    "物料编号": "code", "物料编码": "code", "编码": "code", "商品编码": "code", "电商物料编号": "code",
+    "物料描述": "name", "物料名称": "name", "名称": "name", "描述": "name", "商品名称": "name",
+    "规格型号": "spec", "规格": "spec", "型号": "spec",
+    "计量单位": "unit", "单位": "unit", "计量单位名称": "unit",
+    "标准单价": "price", "单价": "price", "价格": "price", "标准价格": "price", "含税单价": "price",
+    "电商编码": "ecode", "电商编号": "ecode", "商品编码ID": "ecode",
+    "供应商编码": "supplier_code", "供应商编号": "supplier_code",
+    "供应商": "supplier", "供应商简称": "supplier", "供应商缩写": "supplier",
+}
+
+
+def locate_import_header(rows):
+    """在数据前30行内自动定位表头行（兼容表头不在首行、上方有标题/日期/备注等固定行的表格）。
+
+    策略：逐行统计匹配到的表头关键词列数，取匹配列数最多的行；若最多匹配数≥3
+    则判定为表头行；否则按"物料描述/名称/描述"等关键词兜底查找。
+    返回行号（0基）；找不到返回 -1。
+    """
+    best_row, best = -1, 0
+    for ri in range(min(30, len(rows))):
+        matched = sum(1 for v in rows[ri]
+                      if v is not None and norm_header(str(v)) in IMPORT_KEY_MAP)
+        if matched > best:
+            best, best_row = matched, ri
+    if best >= 3:
+        return best_row
+    for ri in range(min(30, len(rows))):
+        if any(v is not None and norm_header(str(v)) in ("物料描述", "物料名称", "商品名称", "名称", "描述")
+               for v in rows[ri]):
+            return ri
+    return -1
 
 
 def fmt_date(s):
