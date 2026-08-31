@@ -625,16 +625,27 @@ async function renderApproveDone() {
 
 /* ---------------- 管理员：物料库 ---------------- */
 let matKw = "";
+let matSort = { by: "id", order: "desc" };
+let matChecked = new Set();
 async function renderMaterials() {
   const v = document.getElementById("view");
   v.innerHTML = '<div class="loading">加载中...</div>';
-  const data = await api("/api/materials?kw=" + encodeURIComponent(matKw) + "&limit=100");
+  const data = await api("/api/materials?kw=" + encodeURIComponent(matKw) +
+    "&limit=100&sort_by=" + matSort.by + "&order=" + matSort.order);
+  matChecked = new Set();
+  const sortOpts = [
+    ["id", "默认（最新入库）"], ["code", "物料编号"], ["name", "物料描述"]
+  ].map(([k, l]) => `<option value="${k}" ${matSort.by === k ? "selected" : ""}>按${l}排序</option>`).join("");
+  const orderOpts = [["desc", "降序"], ["asc", "升序"]]
+    .map(([k, l]) => `<option value="${k}" ${matSort.order === k ? "selected" : ""}>${l}</option>`).join("");
   if (!data.materials.length) {
     v.innerHTML = `<div class="card">
       <div class="card-title">标准物料库 <span class="hint">从云梦泽/历史台账导出的Excel批量导入，建立标准物料库</span></div>
       <div class="toolbar">
-        <input type="text" id="matSearch" placeholder="搜索物料名称/编号/型号" value="${esc(matKw)}">
+        <input type="text" id="matSearch" placeholder="搜索物料名称/编号/型号" value="${esc(matKw)}" onkeydown="if(event.key==='Enter')searchMats()">
         <button class="btn btn-primary" onclick="searchMats()">搜索</button>
+        <select id="matSortBy" class="select-sm" onchange="setMatSort()">${sortOpts}</select>
+        <select id="matSortOrder" class="select-sm" onchange="setMatSort()">${orderOpts}</select>
         <span class="spacer"></span>
         <button class="btn" onclick="addMaterial()">手动新增</button>
         <label class="btn"><span>批量导入Excel</span><input type="file" accept=".xlsx" style="display:none" onchange="importMaterials(this)"></label>
@@ -643,6 +654,7 @@ async function renderMaterials() {
     return;
   }
   const rows = data.materials.map(m => `<tr>
+    <td><input type="checkbox" value="${m.id}" onchange="toggleMatCheck(this)"></td>
     <td>${esc(m.code)}</td><td>${esc(m.name)}</td><td>${esc(m.spec)}</td><td>${esc(m.unit)}</td>
     <td class="t-right">${money(m.price)}</td><td>${esc(m.ecode)}</td><td>${esc(m.supplier)}</td>
     <td>${m.status === "active" ? '<span class="tag tag-approved">在用</span>' : '<span class="tag tag-withdrawn">已下架</span>'}</td>
@@ -651,21 +663,62 @@ async function renderMaterials() {
       <button class="btn btn-sm ${m.status === "active" ? "" : "btn-success"}" onclick="toggleMaterial(${m.id})">${m.status === "active" ? "下架" : "启用"}</button>
     </td></tr>`).join("");
   v.innerHTML = `<div class="card">
-    <div class="card-title">标准物料库 <span class="hint">共 ${data.materials.length} 条</span></div>
+    <div class="card-title">标准物料库 <span class="hint">共 ${data.materials.length} 条；重复物料会在导入时逐条确认，避免误跳过</span></div>
     <div class="toolbar">
       <input type="text" id="matSearch" placeholder="搜索物料名称/编号/型号" value="${esc(matKw)}" onkeydown="if(event.key==='Enter')searchMats()">
       <button class="btn btn-primary" onclick="searchMats()">搜索</button>
+      <select id="matSortBy" class="select-sm" onchange="setMatSort()">${sortOpts}</select>
+      <select id="matSortOrder" class="select-sm" onchange="setMatSort()">${orderOpts}</select>
       <span class="spacer"></span>
       <button class="btn" onclick="addMaterial()">手动新增</button>
+      <button class="btn" id="batchDelBtn" onclick="batchDeleteMaterials()" disabled>批量删除（<span id="matCheckedCount">0</span>）</button>
       <label class="btn"><span>批量导入Excel</span><input type="file" accept=".xlsx" style="display:none" onchange="importMaterials(this)"></label>
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>物料编号</th><th>物料描述</th><th>规格型号</th><th>单位</th><th class="t-right">标准单价</th><th>电商编码</th><th>供应商</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr>
+        <th><input type="checkbox" onclick="toggleAllMatCheck(this)"></th>
+        <th>物料编号</th><th>物料描述</th><th>规格型号</th><th>单位</th><th class="t-right">标准单价</th><th>电商编码</th><th>供应商</th><th>状态</th><th>操作</th>
+      </tr></thead>
       <tbody>${rows}</tbody></table></div></div>`;
 }
 
 function searchMats() {
   matKw = document.getElementById("matSearch").value.trim();
+  renderMaterials();
+}
+
+function setMatSort() {
+  matSort.by = document.getElementById("matSortBy").value;
+  matSort.order = document.getElementById("matSortOrder").value;
+  renderMaterials();
+}
+
+function toggleMatCheck(el) {
+  if (el.checked) matChecked.add(Number(el.value));
+  else matChecked.delete(Number(el.value));
+  updateMatBatchBtn();
+}
+function toggleAllMatCheck(el) {
+  document.querySelectorAll("#view input[type=checkbox][value]").forEach(c => {
+    if (c === el) return;
+    c.checked = el.checked;
+    if (el.checked) matChecked.add(Number(c.value));
+  });
+  if (!el.checked) matChecked = new Set();
+  updateMatBatchBtn();
+}
+function updateMatBatchBtn() {
+  const btn = document.getElementById("batchDelBtn");
+  const cnt = document.getElementById("matCheckedCount");
+  if (btn) btn.disabled = matChecked.size === 0;
+  if (cnt) cnt.textContent = matChecked.size;
+}
+
+async function batchDeleteMaterials() {
+  if (!matChecked.size) return;
+  if (!confirm(`确认删除选中的 ${matChecked.size} 条物料吗？\n（删除后不可恢复；需求单中已引用该物料的历史记录不受影响）`)) return;
+  const data = await api("/api/materials/batch-delete", { method: "POST", body: JSON.stringify({ ids: [...matChecked] }) });
+  toast(data.msg, data.ok ? "success" : "error");
   renderMaterials();
 }
 
@@ -740,9 +793,13 @@ async function importMaterials(input) {
     return;
   }
   const problems = (data.problems || []).slice(0, 50);
+  // 有冲突：弹窗逐条对比确认
+  if (data.conflicts && data.conflicts.length) {
+    renderImportConflicts(data);
+    return;
+  }
   const lines = [
     `新增入库：<b>${data.added}</b> 条`,
-    `重复跳过：<b>${data.duplicated}</b> 条`,
     `缺物料描述：<b>${data.missing}</b> 条`,
     `跳过合计/备注等非物料行：<b>${data.non_data}</b> 条`
   ].join("<br>");
@@ -754,11 +811,104 @@ async function importMaterials(input) {
         <div class="import-summary">${lines}</div>
         <div style="margin-top:12px"><b>未导入的问题行（${problems.length}条）：</b></div>
         <div class="muted small" style="max-height:220px;overflow:auto;margin-top:6px">${list}</div>
-        <div class="muted small" style="margin-top:8px">重复/缺失的物料可先修改Excel后再导入，或直接在下方物料列表中手动新增。</div>
+        <div class="muted small" style="margin-top:8px">缺失的物料可先修改Excel后再导入，或直接在下方物料列表中手动新增。</div>
       </div>
       <div class="modal-foot"><button class="btn btn-primary" onclick="closeModal()">知道了</button></div>`);
   } else {
     toast(lines.replace(/<br>/g, "；"), "success");
+  }
+  renderMaterials();
+}
+
+/* ---------------- 导入冲突逐条确认 ---------------- */
+let importConflictState = { items: [], decisions: {} };
+
+function matFmt(fields, obj, base) {
+  const map = [
+    ["code", "物料编号"], ["name", "物料描述"], ["spec", "规格型号"], ["unit", "单位"],
+    ["price", "标准单价"], ["ecode", "电商编码"], ["supplier_code", "供应商编码"], ["supplier", "供应商"]
+  ];
+  const norm = o => o === undefined || o === null || o === "" ? "" : String(o).trim();
+  const trs = map.map(([k, label]) => {
+    let v = obj[k];
+    if (v === undefined || v === null || v === "") v = '<span class="muted">—</span>';
+    else if (k === "price") v = money(Number(v));
+    else v = esc(String(v));
+    // 差异高亮：与基准（本次导入）逐字段对比，值不同则突出显示
+    let diff = false;
+    if (base) {
+      if (k === "price") diff = Number(norm(base[k]) || 0) !== Number(norm(obj[k]) || 0);
+      else diff = norm(base[k]) !== norm(obj[k]);
+    }
+    return `<tr><td class="cmp-label">${label}</td><td${diff ? ' class="cmp-diff"' : ""}>${v}</td></tr>`;
+  }).join("");
+  return `<table class="cmp-table">${trs}</table>`;
+}
+
+function renderImportConflicts(data) {
+  importConflictState = { items: data.conflicts, decisions: {}, added: data.added || 0 };
+  data.conflicts.forEach((c, i) => { importConflictState.decisions[c.row] = "existing"; });
+  // 自动选中：默认全部"保留库内已有"，用户可改
+  buildImportConflictModal();
+}
+
+function buildImportConflictModal() {
+  const items = importConflictState.items;
+  const blocks = items.map((c, i) => {
+    const cur = importConflictState.decisions[c.row] || "existing";
+    const newFmt = matFmt(null, c.new);
+    const existFmts = c.existing.map(e => {
+      const tag = e.id && !isNaN(e.id) ? `（ID:${e.id}${e.status === "disabled" ? "，已下架" : ""}）` : "（本文件内重复行）";
+      return `<div class="cmp-col"><div class="cmp-title">库内已有 ${tag}</div>${matFmt(null, e, c.new)}</div>`;
+    }).join("");
+    return `<div class="conflict-block" data-row="${c.row}">
+      <div class="conflict-head">第 ${c.row} 行 · ${esc(c.new.name)} ${c.new.code ? "（编号：" + esc(c.new.code) + "）" : ""}
+        <span class="hint">与 ${c.existing.length} 条已有物料重复</span></div>
+      <div class="cmp-wrap">
+        <div class="cmp-col"><div class="cmp-title cmp-new">本次导入</div>${newFmt}</div>
+        ${existFmts}
+      </div>
+      <div class="conflict-actions">
+        <label><input type="radio" name="matCmp${i}" value="new" ${cur === "new" ? "checked" : ""} onchange="setImportDecision(${c.row},'new')"> 保留本次导入（新物料入库，库内重复项下架）</label>
+        <label><input type="radio" name="matCmp${i}" value="existing" ${cur === "existing" ? "checked" : ""} onchange="setImportDecision(${c.row},'existing')"> 保留库内已有（本次导入不入库）</label>
+        <label><input type="radio" name="matCmp${i}" value="all" ${cur === "all" ? "checked" : ""} onchange="setImportDecision(${c.row},'all')"> 都保留（新物料入库，库内不动）</label>
+      </div>
+    </div>`;
+  }).join("");
+  openModal(`
+    <div class="modal-head"><div class="title">发现 ${items.length} 条重复物料 · 请逐条确认</div><button class="close" onclick="closeModal()">×</button></div>
+    <div class="modal-body">
+      <div class="import-summary">已直接入库 <b>${importConflictState.added || 0}</b> 条；以下 <b>${items.length}</b> 条与物料库中已有物料重复（物料编号或物料描述相同）。
+      请对比重复与不重复的因素后，逐条选择处理方式：</div>
+      <div class="conflict-list">${blocks}</div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" onclick="submitImportDecisions()">确认提交</button>
+    </div>`);
+}
+
+function setImportDecision(row, action) {
+  importConflictState.decisions[row] = action;
+}
+
+async function submitImportDecisions() {
+  const decisions = importConflictState.items.map(c => {
+    const action = importConflictState.decisions[c.row] || "existing";
+    return {
+      row: c.row, action,
+      new: c.new,
+      existing_ids: (c.existing || []).map(e => e.id).filter(x => x !== undefined && x !== null)
+    };
+  });
+  const data = await api("/api/materials/import-confirm", {
+    method: "POST", body: JSON.stringify({ decisions })
+  });
+  if (data.ok) {
+    toast(data.msg, "success");
+    closeModal();
+  } else {
+    toast(data.msg, "error");
   }
   renderMaterials();
 }
@@ -1264,7 +1414,7 @@ async function renderUsers() {
 function roleOptions(selected) {
   const opts = [
     { v: "employee", l: "普通员工（仅物资填报）" },
-    { v: "admin", l: "高级管理员（除开发者管理外全部功能）" }
+    { v: "admin", l: "高级管理员（全部功能）" }
   ];
   if (USER.role === "super") opts.push({ v: "super", l: "开发者（全部权限）" });
   if (selected === "approver") opts.unshift({ v: "approver", l: "审批人（兼容存量账号）" });
