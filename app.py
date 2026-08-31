@@ -728,7 +728,12 @@ def api_material_import():
         if ci is None or ci >= len(row):
             return ""
         v = row[ci]
-        return str(v).strip() if v is not None else ""
+        if v is None:
+            return ""
+        # Excel 数字单元格读出为 float（如 1234.0），编码类字段应去掉多余的小数点
+        if isinstance(v, float) and v.is_integer():
+            return str(int(v))
+        return str(v).strip()
 
     def parse_price(v):
         try:
