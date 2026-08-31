@@ -197,6 +197,13 @@ def init_db():
 def now_str():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+def parse_float(v):
+    """安全转 float，失败返回 0。"""
+    try:
+        return float(v) if v not in (None, "") else 0
+    except (TypeError, ValueError):
+        return 0
+
 def today_str():
     return datetime.datetime.now().strftime("%Y%m%d")
 
@@ -510,14 +517,17 @@ def api_dept_receivers_save():
     return jsonify({"ok": True, "msg": "部门收货信息已保存（%d 条）" % saved})
 
 # ---------------------------------------------------------------- 物料库
-def search_materials(db, kw, limit=50):
+def search_materials(db, kw, limit=50, sort_by="id", order="desc"):
+    """物料查询。sort_by 支持 id/code/name，order 支持 asc/desc。"""
     sql = "SELECT * FROM materials WHERE status='active'"
     args = []
     if kw:
         like = "%" + kw.strip() + "%"
         sql += " AND (name LIKE ? OR code LIKE ? OR spec LIKE ? OR supplier LIKE ?)"
         args = [like, like, like, like]
-    sql += " ORDER BY id DESC LIMIT ?"
+    order_sql = {"code": "code", "name": "name", "id": "id"}.get(sort_by, "id")
+    order_dir = "ASC" if str(order).lower() == "asc" else "DESC"
+    sql += " ORDER BY %s %s, id DESC LIMIT ?" % (order_sql, order_dir)
     args.append(limit)
     return db.execute(sql, args).fetchall()
 
@@ -525,8 +535,10 @@ def search_materials(db, kw, limit=50):
 @login_required
 def api_materials():
     kw = request.args.get("kw", "")
+    sort_by = request.args.get("sort_by", "id")
+    order = request.args.get("order", "desc")
     db = get_db()
-    rows = search_materials(db, kw, limit=100)
+    rows = search_materials(db, kw, limit=100, sort_by=sort_by, order=order)
     return jsonify({"ok": True, "materials": [dict(r) for r in rows]})
 
 @app.route("/api/materials", methods=["POST"])
@@ -581,6 +593,46 @@ def api_material_disable(mid):
     db.commit()
     add_log(g.user["username"], "上下架物料", m["name"])
     return jsonify({"ok": True, "msg": "操作成功"})
+
+@app.route("/api/materials/batch-delete", methods=["POST"])
+@role_required("admin", "super")
+def api_material_batch_delete():
+    """批量删除物料（物理删除）。已下架的物料可删除；若物料在需求单中被引用，
+    提示但允许删除（需求单中保存的是文本快照，不受影响）。"""
+    data = request.get_json(force=True) or {}
+    ids = data.get("ids") or []
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"ok": False, "msg": "未选择要删除的物料"})
+    ids = [int(i) for i in ids if str(i).isdigit()]
+    if not ids:
+        return jsonify({"ok": False, "msg": "未选择要删除的物料"})
+    db = get_db()
+    placeholders = ",".join("?" for _ in ids)
+    rows = db.execute(
+        "SELECT id,name FROM materials WHERE id IN (%s)" % placeholders, ids).fetchall()
+    if not rows:
+        return jsonify({"ok": False, "msg": "未找到对应物料"})
+    # 统计被需求单引用的物料（提示用）
+    ref_codes = set()
+    for r in rows:
+        ref_codes.add(r["name"])
+    used = set()
+    if ref_codes:
+        for nm in ref_codes:
+            c = db.execute(
+                "SELECT COUNT(*) AS c FROM demand_items WHERE material_name=?", (nm,)).fetchone()["c"]
+            if c:
+                used.add(nm)
+    db.execute("DELETE FROM materials WHERE id IN (%s)" % placeholders, ids)
+    db.commit()
+    names = "、".join(r["name"] for r in rows[:5])
+    if len(rows) > 5:
+        names += " 等%d条" % len(rows)
+    add_log(g.user["username"], "批量删除物料", "删除%d条: %s" % (len(rows), names))
+    msg = "已删除 %d 条物料" % len(rows)
+    if used:
+        msg += "；其中 %s 曾在需求单中出现过（需求单保留原快照，不受影响）" % "、".join(list(used)[:5])
+    return jsonify({"ok": True, "msg": msg, "deleted": len(rows)})
 
 @app.route("/api/materials/import", methods=["POST"])
 @role_required("admin", "super")
@@ -651,8 +703,26 @@ def api_material_import():
                          "制表", "备注", "说明", "签字", "盖章", "负责人", "经办人", "供应商盖章", "日期")
 
     db = get_db()
-    added = skipped = duplicated = missing = non_data = 0
-    problems = []  # 问题明细（行号+原因）
+
+    def getv(row, field):
+        ci = mapping.get(field)
+        if ci is None or ci >= len(row):
+            return ""
+        v = row[ci]
+        return str(v).strip() if v is not None else ""
+
+    def parse_price(v):
+        try:
+            return float(v) if v else 0
+        except ValueError:
+            return 0
+
+    added = skipped = missing = non_data = 0
+    dup_skipped = 0    # 编号/描述/单价/供应商完全一致而自动跳过的条数
+    problems = []      # 硬问题（缺描述等）
+    conflicts = []     # 待用户决策的冲突（编号或描述与库内重复）
+    # 记录本次已插入的物料，用于检测文件内部自身的编号/描述重复
+    seen_mats = []
     for idx, row in enumerate(rows[header_row_idx + 1:], header_row_idx + 2):
         if not any(v not in (None, "") for v in row):
             continue
@@ -662,18 +732,11 @@ def api_material_import():
             non_data += 1
             continue
 
-        def getv(field):
-            ci = mapping.get(field)
-            if ci is None or ci >= len(row):
-                return ""
-            v = row[ci]
-            return str(v).strip() if v is not None else ""
-
-        name = getv("name")
-        code = getv("code")
+        name = getv(row, "name")
+        code = getv(row, "code")
         if not name:
             # 若整行无任何物料核心字段，视为疑似非数据行（如单独金额行）
-            if not (code or getv("ecode") or getv("spec") or getv("unit") or getv("supplier")):
+            if not (code or getv(row, "ecode") or getv(row, "spec") or getv(row, "unit") or getv(row, "supplier")):
                 non_data += 1
                 continue
             missing += 1
@@ -681,33 +744,127 @@ def api_material_import():
             if len(problems) < 100:
                 problems.append({"row": idx, "reason": "缺少物料描述"})
             continue
-        # 去重：物料编号相同 或 名称+规格 相同则跳过
+
+        new_mat = {
+            "code": code, "name": name, "spec": getv(row, "spec"),
+            "unit": getv(row, "unit"), "price": parse_price(getv(row, "price")),
+            "ecode": getv(row, "ecode"), "supplier_code": getv(row, "supplier_code"),
+            "supplier": getv(row, "supplier"),
+        }
+        # 去重判定：物料编号相同（且编号非空）或 物料描述相同，即视为潜在重复，
+        # 是否保留由用户在弹窗中决策（多维度对比编号/描述/单价/电商编码/供应商）
+        conds = []
+        args = []
+        if code:
+            conds.append("(code=? AND code!='')")
+            args.append(code)
+        conds.append("name=?")
+        args.append(name)
         exist = db.execute(
-            "SELECT 1 FROM materials WHERE (code=? AND code!='') OR (name=? AND spec=?) LIMIT 1",
-            (code, name, getv("spec"))).fetchone()
-        if exist:
-            duplicated += 1
+            "SELECT id,code,name,spec,unit,price,ecode,supplier_code,supplier,status FROM materials WHERE (%s) ORDER BY id" %
+            " OR ".join(conds), args).fetchall()
+        # 叠加本次文件内已插入/已确认的物料，识别文件自身重复
+        file_dup = [s for s in seen_mats if (code and s["code"] == code) or s["name"] == name]
+        existing = [dict(r) for r in exist] + file_dup
+        if existing:
+            # 完全一致判定：物料编号、物料描述、单价、供应商均相同 → 视为确定的重复物料，
+            # 系统自动保留库内已有记录，静默跳过本次导入行，不弹窗
+            new_price = new_mat["price"]
+            new_supplier = (new_mat["supplier"] or "").strip()
+            is_exact_dup = False
+            for s in existing:
+                if (s["code"] == code and s["name"] == name
+                        and parse_price(s["price"]) == new_price
+                        and (s.get("supplier") or "").strip() == new_supplier):
+                    is_exact_dup = True
+                    break
+            if is_exact_dup:
+                dup_skipped += 1
+                skipped += 1
+                continue
+            conflicts.append({
+                "row": idx, "new": new_mat, "existing": existing,
+            })
             skipped += 1
-            if len(problems) < 100:
-                problems.append({"row": idx, "reason": "与物料库重复（编号或名称+规格）"})
             continue
-        try:
-            price = float(getv("price")) if getv("price") else 0
-        except ValueError:
-            price = 0
-        db.execute(
+        cur = db.execute(
             "INSERT INTO materials (code,name,spec,unit,price,ecode,supplier_code,supplier,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (code, name, getv("spec"), getv("unit"), price, getv("ecode"),
-             getv("supplier_code"), getv("supplier"), "active", now_str()))
+            (new_mat["code"], new_mat["name"], new_mat["spec"], new_mat["unit"],
+             new_mat["price"], new_mat["ecode"], new_mat["supplier_code"],
+             new_mat["supplier"], "active", now_str()))
+        new_id = cur.lastrowid
+        if new_id is None:
+            r = db.execute("SELECT COALESCE(MAX(id),0) AS i FROM materials").fetchone()
+            new_id = r["i"]
+        seen_mats.append(dict(new_mat, id=new_id))
         added += 1
     db.commit()
     add_log(g.user["username"], "批量导入物料",
-            "新增%d条 重复%d条 缺描述%d条 非数据行%d条" % (added, duplicated, missing, non_data))
+            "新增%d条 完全重复自动跳过%d条 冲突待确认%d条 缺描述%d条 非数据行%d条" % (added, dup_skipped, len(conflicts), missing, non_data))
+    if conflicts:
+        return jsonify({
+            "ok": True, "added": added, "conflicts": conflicts,
+            "missing": missing, "non_data": non_data, "problems": problems,
+            "msg": "解析完成：直接入库 %d 条，完全重复自动跳过 %d 条，发现 %d 条与物料库重复（请逐条确认），缺描述 %d 条，跳过非物料行 %d 条" %
+                   (added, dup_skipped, len(conflicts), missing, non_data),
+        })
     return jsonify({
-        "ok": True, "added": added, "duplicated": duplicated,
+        "ok": True, "added": added, "conflicts": [],
         "missing": missing, "non_data": non_data, "problems": problems,
-        "msg": "导入完成：新增 %d 条，重复跳过 %d 条，缺描述 %d 条，跳过非物料行 %d 条" %
-               (added, duplicated, missing, non_data),
+        "msg": "导入完成：新增 %d 条，完全重复自动跳过 %d 条，缺描述 %d 条，跳过非物料行 %d 条" %
+               (added, dup_skipped, missing, non_data),
+    })
+
+@app.route("/api/materials/import-confirm", methods=["POST"])
+@role_required("admin", "super")
+def api_material_import_confirm():
+    """导入冲突确认：接收用户的逐条决策。
+    每项决策：{"row":行号, "action": "new"|"existing"|"all", "new": {...}, "existing_ids": [...]}
+      - new      保留本次导入的物料（新物料入库，库内重复物料下架）
+      - existing 保留库内已有（本次导入不入库）
+      - all      都保留（新物料入库，库内物料保持不动）
+    """
+    data = request.get_json(force=True) or {}
+    decisions = data.get("decisions") or []
+    if not isinstance(decisions, list) or not decisions:
+        return jsonify({"ok": False, "msg": "未收到决策数据"})
+    db = get_db()
+    inserted = kept_new = kept_existing = 0
+    for d in decisions:
+        action = d.get("action")
+        new_mat = d.get("new") or {}
+        if action == "new":
+            # 新物料入库，库内重复的下架
+            db.execute(
+                "INSERT INTO materials (code,name,spec,unit,price,ecode,supplier_code,supplier,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (new_mat.get("code", ""), new_mat.get("name", ""), new_mat.get("spec", ""),
+                 new_mat.get("unit", ""), parse_float(new_mat.get("price")),
+                 new_mat.get("ecode", ""), new_mat.get("supplier_code", ""),
+                 new_mat.get("supplier", ""), "active", now_str()))
+            for eid in (d.get("existing_ids") or []):
+                if str(eid).isdigit():
+                    db.execute("UPDATE materials SET status='disabled' WHERE id=?", (int(eid),))
+            inserted += 1
+            kept_new += 1
+        elif action == "all":
+            db.execute(
+                "INSERT INTO materials (code,name,spec,unit,price,ecode,supplier_code,supplier,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (new_mat.get("code", ""), new_mat.get("name", ""), new_mat.get("spec", ""),
+                 new_mat.get("unit", ""), parse_float(new_mat.get("price")),
+                 new_mat.get("ecode", ""), new_mat.get("supplier_code", ""),
+                 new_mat.get("supplier", ""), "active", now_str()))
+            inserted += 1
+            kept_new += 1
+        else:  # existing
+            kept_existing += 1
+    db.commit()
+    add_log(g.user["username"], "批量导入物料(冲突确认)",
+            "新增%d条 保留库内%d条" % (inserted, kept_existing))
+    return jsonify({
+        "ok": True, "inserted": inserted,
+        "kept_existing": kept_existing,
+        "msg": "已按您的选择处理完成：新增入库 %d 条，保留库内已有 %d 条" %
+               (inserted, kept_existing),
     })
 
 # ---------------------------------------------------------------- 新物料入库申请
@@ -1618,7 +1775,12 @@ def api_stats():
         res["done"] = db.execute(
             "SELECT COUNT(*) AS c FROM demands WHERE approved_by=?", (u["name"],)).fetchone()["c"]
     else:
-        res["total_users"] = db.execute("SELECT COUNT(*) AS c FROM users WHERE status='active'").fetchone()["c"]
+        # 高级管理员工作台的在职账号统计不包含开发者(super)账号
+        if role == "admin":
+            res["total_users"] = db.execute(
+                "SELECT COUNT(*) AS c FROM users WHERE status='active' AND role<>'super'").fetchone()["c"]
+        else:
+            res["total_users"] = db.execute("SELECT COUNT(*) AS c FROM users WHERE status='active'").fetchone()["c"]
         res["materials"] = db.execute("SELECT COUNT(*) AS c FROM materials WHERE status='active'").fetchone()["c"]
         res["pending_demands"] = db.execute("SELECT COUNT(*) AS c FROM demands WHERE status='pending'").fetchone()["c"]
         res["approved_demands"] = db.execute("SELECT COUNT(*) AS c FROM demands WHERE status='approved'").fetchone()["c"]
