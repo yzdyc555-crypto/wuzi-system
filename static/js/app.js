@@ -648,7 +648,7 @@ async function renderMaterials() {
         <select id="matSortOrder" class="select-sm" onchange="setMatSort()">${orderOpts}</select>
         <span class="spacer"></span>
         <button class="btn" onclick="addMaterial()">手动新增</button>
-        <label class="btn"><span>批量导入Excel</span><input type="file" accept=".xlsx" style="display:none" onchange="importMaterials(this)"></label>
+        <label class="btn"><span>批量导入Excel</span><input type="file" accept=".xlsx,.xls,.et" style="display:none" onchange="importMaterials(this)"></label>
       </div>
       <div class="empty">物料库为空，请先「批量导入Excel」或「手动新增」。</div></div>`;
     return;
@@ -672,7 +672,7 @@ async function renderMaterials() {
       <span class="spacer"></span>
       <button class="btn" onclick="addMaterial()">手动新增</button>
       <button class="btn" id="batchDelBtn" onclick="batchDeleteMaterials()" disabled>批量删除（<span id="matCheckedCount">0</span>）</button>
-      <label class="btn"><span>批量导入Excel</span><input type="file" accept=".xlsx" style="display:none" onchange="importMaterials(this)"></label>
+      <label class="btn"><span>批量导入Excel</span><input type="file" accept=".xlsx,.xls,.et" style="display:none" onchange="importMaterials(this)"></label>
     </div>
     <div class="table-wrap"><table>
       <thead><tr>

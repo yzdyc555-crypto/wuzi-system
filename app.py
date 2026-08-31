@@ -28,6 +28,11 @@ except ImportError:
     openpyxl = None
     Workbook = load_workbook = None
 
+try:
+    import xlrd  # 解析 .xls / 老版 WPS .et（OLE2 格式）
+except ImportError:
+    xlrd = None
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 EXPORT_DIR = os.path.join(BASE_DIR, "exports")
@@ -634,20 +639,57 @@ def api_material_batch_delete():
         msg += "；其中 %s 曾在需求单中出现过（需求单保留原快照，不受影响）" % "、".join(list(used)[:5])
     return jsonify({"ok": True, "msg": msg, "deleted": len(rows)})
 
+def read_spreadsheet_rows(data):
+    """兼容解析 .xlsx / .xls / .et 等多种表格格式，返回行列表（每行为 list）。
+
+    按文件内容魔数自动识别，与扩展名无关：
+    - PK\\x03\\x04（zip 容器）→ .xlsx 或新版 WPS .et，用 openpyxl
+    - D0CF11E0（OLE2 容器）→ .xls 或老版 WPS .et，用 xlrd
+    - 其他 → 依次兜底尝试 openpyxl、xlrd
+    """
+    if load_workbook is None and xlrd is None:
+        raise RuntimeError("服务端缺少表格解析库（openpyxl/xlrd），无法导入")
+    if data[:4] == b"PK\x03\x04":
+        if load_workbook is None:
+            raise RuntimeError("服务端缺少 openpyxl，无法解析该格式")
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        ws = wb.active
+        return [list(r) for r in ws.iter_rows(values_only=True)]
+    if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        if xlrd is None:
+            raise RuntimeError("服务端缺少 xlrd，无法解析 .xls / 老版 .et 表格")
+        wb = xlrd.open_workbook(file_contents=data)
+        ws = wb.sheet_by_index(0)
+        return [ws.row_values(r) for r in range(ws.nrows)]
+    # 未知魔数：兜底依次尝试
+    errs = []
+    if load_workbook is not None:
+        try:
+            wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            ws = wb.active
+            return [list(r) for r in ws.iter_rows(values_only=True)]
+        except Exception as e:
+            errs.append("openpyxl: %s" % e)
+    if xlrd is not None:
+        try:
+            wb = xlrd.open_workbook(file_contents=data)
+            ws = wb.sheet_by_index(0)
+            return [ws.row_values(r) for r in range(ws.nrows)]
+        except Exception as e:
+            errs.append("xlrd: %s" % e)
+    raise RuntimeError("无法识别的表格格式；" + "; ".join(errs))
+
+
 @app.route("/api/materials/import", methods=["POST"])
 @role_required("admin", "super")
 def api_material_import():
-    if load_workbook is None:
-        return jsonify({"ok": False, "msg": "服务端缺少 openpyxl，无法导入"})
     file = request.files.get("file")
     if not file:
         return jsonify({"ok": False, "msg": "未选择文件"})
     try:
-        wb = load_workbook(io.BytesIO(file.read()), read_only=True, data_only=True)
+        rows = read_spreadsheet_rows(file.read())
     except Exception as e:
         return jsonify({"ok": False, "msg": "文件解析失败: " + str(e)})
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
     if not rows:
         return jsonify({"ok": False, "msg": "文件为空"})
 
