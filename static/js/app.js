@@ -632,7 +632,7 @@ async function renderMaterials() {
   const v = document.getElementById("view");
   v.innerHTML = '<div class="loading">加载中...</div>';
   const data = await api("/api/materials?kw=" + encodeURIComponent(matKw) +
-    "&limit=100&sort_by=" + matSort.by + "&order=" + matSort.order + "&status=" + matStatus);
+    "&sort_by=" + matSort.by + "&order=" + matSort.order + "&status=" + matStatus);
   matChecked = new Set();
   const statusChips = `<span class="filter-chip">
     <span class="chip ${matStatus === "active" ? "active" : ""}" onclick="setMatStatus('active')">在用</span>
@@ -673,7 +673,7 @@ async function renderMaterials() {
       <button class="btn btn-sm ${m.status === "active" ? "" : "btn-success"}" onclick="toggleMaterial(${m.id})">${m.status === "active" ? "下架" : "启用"}</button>
     </td></tr>`).join("");
   v.innerHTML = `<div class="card">
-    <div class="card-title">${matTitle} <span class="hint">${matStatus === "active" ? `共 ${data.materials.length} 条；重复物料会在导入时逐条确认，避免误跳过` : `共 ${data.materials.length} 条；下架≠删除，可点「启用」恢复在用`}</span></div>
+    <div class="card-title">${matTitle} <span class="hint">${matStatus === "active" ? `共 ${data.total} 条；重复物料会在导入时逐条确认，避免误跳过` : `共 ${data.total} 条；下架≠删除，可点「启用」恢复在用`}</span></div>
     <div class="toolbar">
       ${statusChips}
       <input type="text" id="matSearch" placeholder="搜索物料名称/编号/型号" value="${esc(matKw)}" onkeydown="if(event.key==='Enter')searchMats()">

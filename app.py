@@ -523,7 +523,8 @@ def api_dept_receivers_save():
 
 # ---------------------------------------------------------------- 物料库
 def search_materials(db, kw, limit=50, sort_by="id", order="desc", status="active"):
-    """物料查询。sort_by 支持 id/code/name，order 支持 asc/desc；status 支持 active/disabled/all。"""
+    """物料查询。sort_by 支持 id/code/name，order 支持 asc/desc；status 支持 active/disabled/all。
+    limit 为 None 时返回全部。返回 (rows, total)，total 为满足条件的实际条数。"""
     conds = []
     args = []
     if status == "disabled":
@@ -536,14 +537,16 @@ def search_materials(db, kw, limit=50, sort_by="id", order="desc", status="activ
         like = "%" + kw.strip() + "%"
         conds.append("(name LIKE ? OR code LIKE ? OR spec LIKE ? OR supplier LIKE ?)")
         args = [like, like, like, like]
-    sql = "SELECT * FROM materials"
-    if conds:
-        sql += " WHERE " + " AND ".join(conds)
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
+    total = db.execute("SELECT COUNT(*) AS c FROM materials" + where, args).fetchone()["c"]
+    sql = "SELECT * FROM materials" + where
     order_sql = {"code": "code", "name": "name", "id": "id"}.get(sort_by, "id")
     order_dir = "ASC" if str(order).lower() == "asc" else "DESC"
-    sql += " ORDER BY %s %s, id DESC LIMIT ?" % (order_sql, order_dir)
-    args.append(limit)
-    return db.execute(sql, args).fetchall()
+    sql += " ORDER BY %s %s, id DESC" % (order_sql, order_dir)
+    if limit is not None:
+        sql += " LIMIT ?"
+        args.append(limit)
+    return db.execute(sql, args).fetchall(), total
 
 @app.route("/api/materials", methods=["GET"])
 @login_required
@@ -553,8 +556,8 @@ def api_materials():
     order = request.args.get("order", "desc")
     status = request.args.get("status", "active")
     db = get_db()
-    rows = search_materials(db, kw, limit=100, sort_by=sort_by, order=order, status=status)
-    return jsonify({"ok": True, "materials": [dict(r) for r in rows]})
+    rows, total = search_materials(db, kw, limit=None, sort_by=sort_by, order=order, status=status)
+    return jsonify({"ok": True, "materials": [dict(r) for r in rows], "total": total})
 
 @app.route("/api/materials", methods=["POST"])
 @role_required("admin", "super")
