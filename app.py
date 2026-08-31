@@ -711,9 +711,13 @@ def api_material_import():
     header = [str(c).strip() if c is not None else "" for c in rows[header_row_idx]]
     mapping = {}
     for i, h in enumerate(header):
-        f = IMPORT_KEY_MAP.get(norm_header(h))
+        nh = norm_header(h)
+        f = IMPORT_KEY_MAP.get(nh)
         if f and f not in mapping:
             mapping[f] = i
+        # 兜底：表头包含"单价"即识别为标准单价列（兼容"到货单价""参考单价"等变体，避免单价为0）
+        elif f is None and nh and "单价" in nh and "price" not in mapping:
+            mapping["price"] = i
     if "name" not in mapping:
         return jsonify({"ok": False, "msg": "未识别到『物料描述/物料名称』列，请确认表格包含该表头列（如：物料编号、物料描述、规格型号、计量单位、标准单价、电商编码、供应商编码、供应商）"})
 
@@ -736,8 +740,16 @@ def api_material_import():
         return str(v).strip()
 
     def parse_price(v):
+        if v is None or v == "":
+            return 0
+        if isinstance(v, (int, float)):
+            return float(v)
+        s = str(v).strip()
+        # 去除千分位逗号、货币符号、单位，全角数字/小数点转半角
+        s = s.replace(",", "").replace("，", "").replace("￥", "").replace("¥", "").replace("元", "")
+        s = "".join(chr(ord(c) - 0xFEE0) if 0xFF01 <= ord(c) <= 0xFF5E else c for c in s).strip()
         try:
-            return float(v) if v else 0
+            return float(s) if s else 0
         except ValueError:
             return 0
 
@@ -1248,6 +1260,8 @@ IMPORT_KEY_MAP = {
     "规格型号": "spec", "规格": "spec", "型号": "spec",
     "计量单位": "unit", "单位": "unit", "计量单位名称": "unit",
     "标准单价": "price", "单价": "price", "价格": "price", "标准价格": "price", "含税单价": "price",
+    "数量": "quantity", "采购数量": "quantity",
+    "金额": "amount", "小计": "amount", "合计金额": "amount", "计划金额": "amount",
     "电商编码": "ecode", "电商编号": "ecode", "商品编码ID": "ecode",
     "供应商编码": "supplier_code", "供应商编号": "supplier_code",
     "供应商": "supplier", "供应商简称": "supplier", "供应商缩写": "supplier",

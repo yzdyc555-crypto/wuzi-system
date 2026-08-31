@@ -375,7 +375,7 @@ tr:hover td { background: #f8fafc; }
 .cmp-wrap { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .cmp-col { flex: 1; min-width: 260px; }
 .cmp-title { font-size: 13px; color: var(--text-light); margin-bottom: 5px; }
-.cmp-title.cmp-new { color: var(--primary); font-weight: 600; }
+.cmp-title.cmp-new { color: var(--accent); font-weight: 600; }
 .cmp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .cmp-table td { border: 1px solid var(--border); padding: 5px 8px; white-space: normal; word-break: break-all; }
 .cmp-table td.cmp-label { background: #f7f8fa; color: var(--text-light); width: 88px; }
